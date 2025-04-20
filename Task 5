@@ -1,77 +1,115 @@
 import os
+import pygame
+import subprocess
 from midiutil import MIDIFile
-from pydub import AudioSegment
 
-# -------------------------------
-# STEP 1: Generate a simple jazz MIDI
-# -------------------------------
-def generate_jazz_midi(midi_path):
+# --- CONFIG ---
+SOUNDFONT_PATH = "FluidR3_GM.sf2"  # Path to your .sf2 SoundFont file
+FFMPEG_PATH = "ffmpeg"  # Assumes ffmpeg is in your PATH
+
+# --- FUNCTIONS ---
+
+def generate_jazz_midi(output_path):
     print("[INFO] Generating jazz-style MIDI...")
 
-    midi = MIDIFile(1)
     track = 0
-    time = 0
-    midi.addTrackName(track, time, "Jazz Track")
-    midi.addTempo(track, time, 100)
-
     channel = 0
+    time = 0
+    tempo = 120
     volume = 100
-    instrument = 0  # Acoustic Grand Piano
-    midi.addProgramChange(track, channel, time, instrument)
 
-    # Simple jazz-style walking bass line (Cmaj7 to G7)
-    notes = [60, 62, 64, 67, 59, 62, 65, 67]  # Cmaj7 → G7
-    for i, pitch in enumerate(notes):
-        midi.addNote(track, channel, pitch, time + i, 1, volume)
+    midi = MIDIFile(1)  # one track
+    midi.addTrackName(track, time, "Jazz Track")
+    midi.addTempo(track, time, tempo)
 
-    with open(midi_path, "wb") as output_file:
-        midi.writeFile(output_file)
-    print(f"[INFO] MIDI saved to {midi_path}")
+    # Add a simple jazz-style walking bass with chord hits
+    notes = [48, 50, 52, 53, 55, 57, 59, 60]  # C major scale (bass region)
+    for i, note in enumerate(notes * 4):
+        midi.addNote(track, channel, note, time + i * 0.5, 0.5, volume)
 
-# -------------------------------
-# STEP 2: Mix the rendered MIDI and voice recording
-# -------------------------------
-def mix_audio(recorded_path, midi_path, output_path):
-    print("[INFO] Loading audio files...")
-    recorded = AudioSegment.from_file(recorded_path)
-    jazz = AudioSegment.from_file(midi_path)
+    # Chord stabs (higher up)
+    chords = [(60, 64, 67), (62, 65, 69), (59, 63, 67), (57, 60, 64)]
+    for i, chord in enumerate(chords * 2):
+        for note in chord:
+            midi.addNote(track, channel, note, time + i * 2, 1.5, volume - 10)
 
-    print("[INFO] Mixing...")
-    mixed = recorded.overlay(jazz)
+    with open(output_path, "wb") as f:
+        midi.writeFile(f)
 
-    print(f"[INFO] Exporting final mix to {output_path}")
-    mixed.export(output_path, format="wav")
+    print(f"[INFO] MIDI saved to: {output_path}")
+    return True
 
-# -------------------------------
-# STEP 3: Optional Opus (CELP) compression
-# -------------------------------
-def compress_to_opus(wav_input, opus_output):
-    print("[INFO] Compressing to .opus (CELP)...")
-    audio = AudioSegment.from_wav(wav_input)
-    audio.export(opus_output, format="opus", codec="libopus")
-    print(f"[INFO] Compressed file saved as {opus_output}")
+def mix_with_celp(wav_path, midi_path, output_path):
+    print("[INFO] Mixing audio with CELP compression...")
 
-# -------------------------------
-# MAIN
-# -------------------------------
+    try:
+        # Convert MIDI to WAV using ffmpeg and SoundFont
+        temp_midi_wav = "midi_rendered.wav"
+        midi_to_wav_cmd = [
+            FFMPEG_PATH,
+            "-y",
+            "-i", midi_path,
+            "-f", "wav",
+            "-acodec", "pcm_s16le",
+            "-ar", "44100",
+            temp_midi_wav
+        ]
+        subprocess.run(midi_to_wav_cmd, check=True)
+
+        # Mix MIDI WAV with recorded audio
+        mixed_wav = "mixed.wav"
+        mix_cmd = [
+            FFMPEG_PATH,
+            "-y",
+            "-i", wav_path,
+            "-i", temp_midi_wav,
+            "-filter_complex", "amix=inputs=2:duration=longest",
+            mixed_wav
+        ]
+        subprocess.run(mix_cmd, check=True)
+
+        # Apply CELP compression (Opus)
+        compress_cmd = [
+            FFMPEG_PATH,
+            "-y",
+            "-i", mixed_wav,
+            "-c:a", "libopus",
+            "-b:a", "64k",
+            output_path
+        ]
+        subprocess.run(compress_cmd, check=True)
+
+        os.remove(temp_midi_wav)
+        os.remove(mixed_wav)
+
+        print(f"[INFO] Final output saved to: {output_path}")
+        return True
+
+    except subprocess.CalledProcessError as e:
+        print("[ERROR] ffmpeg processing failed:", e)
+        return False
+
+def play_midi(midi_file):
+    print(f"[INFO] Playing MIDI: {midi_file}")
+    pygame.init()
+    pygame.mixer.init()
+    try:
+        pygame.mixer.music.load(midi_file)
+        pygame.mixer.music.play()
+        while pygame.mixer.music.get_busy():
+            pygame.time.Clock().tick(10)
+    except Exception as e:
+        print("[ERROR] Failed to play MIDI:", e)
+    finally:
+        pygame.quit()
+
+# --- MAIN ---
 if __name__ == "__main__":
     recorded_path = "recorded_audio.wav"
-    midi_file = "jazz_track.mid"
-    rendered_wav = "midi_rendered.wav"
-    final_mix = "final_mix.wav"
-    compressed_mix = "final_mix.opus"
+    midi_output = "jazz_track.mid"
+    final_output = "final_mix.opus"
 
-    # Step 1: Generate MIDI
-    generate_jazz_midi(midi_file)
+    if generate_jazz_midi(midi_output):
+        if mix_with_celp(recorded_path, midi_output, final_output):
+            play_midi(midi_output)
 
-    # Step 2: Render MIDI to WAV using FluidSynth
-    print("[INFO] Rendering MIDI to WAV using FluidSynth...")
-    soundfont = "FluidR3_GM.sf2"  # Make sure this is in your folder or provide full path
-    fs_command = f'fluidsynth -ni "{soundfont}" "{midi_file}" -F "{rendered_wav}" -r 44100'
-    os.system(fs_command)
-
-    # Step 3: Mix voice + jazz
-    mix_audio(recorded_path, rendered_wav, final_mix)
-
-    # Step 4: Optional CELP (Opus) compression
-    compress_to_opus(final_mix, compressed_mix)
