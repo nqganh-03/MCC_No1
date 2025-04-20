@@ -12,6 +12,6 @@ magnitude_plot = magnitude(1:half_N);
 plot(f_plot, 20*log10(magnitude_plot + eps));
 xlabel('Frequency (Hz)');
 ylabel('Magnitude (dB)');
-title('Spectrum of Recorded Audio');
+title('Frequency-Domain Spectrum of Recorded Audio');
 grid on;
 xlim([0 fs/2]);
