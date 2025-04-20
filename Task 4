@@ -1,0 +1,64 @@
+%% Đọc các file âm thanh
+[x_ref, fs] = audioread('group_record.wav');              % file gốc
+[x_mp3, ~] = audioread('group_record_128kbps.mp3');       % file MP3
+[x_celp, ~] = audioread('decompressed.wav');              % file CELP (giữ 1 kênh nếu stereo)
+x_ref = x_ref(:,1);
+x_mp3 = x_mp3(:,1);
+x_celp = x_celp(:,1);
+
+% Cắt tín hiệu cùng độ dài
+min_len = min([length(x_ref), length(x_mp3), length(x_celp)]);
+x_ref = x_ref(1:min_len);
+x_mp3 = x_mp3(1:min_len);
+x_celp = x_celp(1:min_len);
+
+%% Tính PSNR tổng thể
+psnr_fn = @(x, y) 10 * log10(max(x.^2) / mean((x - y).^2));
+psnr_mp3 = psnr_fn(x_ref, x_mp3);
+psnr_celp = psnr_fn(x_ref, x_celp);
+
+fprintf('\♥ PSNR MP3: %.2f dB\n', psnr_mp3);
+fprintf('\♥ PSNR CELP: %.2f dB\n\n', psnr_celp);
+
+%% Tính PSNR theo từng khung
+frame_size = round(0.02 * fs);    % 20ms per frame
+overlap = round(0.01 * fs);       % 10ms overlap
+hop = frame_size - overlap;
+num_frames = floor((min_len - overlap) / hop);
+
+psnr_mp3_all = zeros(num_frames,1);
+psnr_celp_all = zeros(num_frames,1);
+
+for i = 1:num_frames
+    start = (i-1)*hop + 1;
+    frame_ref = x_ref(start : start + frame_size - 1);
+    frame_mp3 = x_mp3(start : start + frame_size - 1);
+    frame_celp = x_celp(start : start + frame_size - 1);
+    
+    mse_mp3 = mean((frame_ref - frame_mp3).^2);
+    mse_celp = mean((frame_ref - frame_celp).^2);
+    max_val = max(frame_ref.^2);  % dùng cùng 1 max để công bằng
+    
+    psnr_mp3_all(i) = 10 * log10(max_val / mse_mp3);
+    psnr_celp_all(i) = 10 * log10(max_val / mse_celp);
+end
+
+%% Vẽ biểu đồ PSNR
+figure;
+plot(psnr_mp3_all, 'r'); hold on;
+plot(psnr_celp_all, 'b');
+legend('MP3', 'CELP');
+xlabel('Chỉ số khung (Frame Index)');
+ylabel('PSNR (dB)');
+title('So sánh PSNR giữa MP3 và CELP theo từng khung');
+grid on;
+
+%% Hiển thị thống kê PSNR
+fprintf('\n📊 Thống kê PSNR từng khung:\n');
+fprintf('MP3  - Trung bình: %.2f dB | Min: %.2f | Max: %.2f | Std: %.2f\n', ...
+    mean(psnr_mp3_all), min(psnr_mp3_all), max(psnr_mp3_all), std(psnr_mp3_all));
+fprintf('CELP - Trung bình: %.2f dB | Min: %.2f | Max: %.2f | Std: %.2f\n', ...
+    mean(psnr_celp_all), min(psnr_celp_all), max(psnr_celp_all), std(psnr_celp_all));
+
+fprintf('\n✅ PSNR MP3: %.2f dB\n', psnr_mp3);
+fprintf('✅ PSNR CELP: %.2f dB\n', psnr_celp);
