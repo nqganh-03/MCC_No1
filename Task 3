@@ -1,0 +1,189 @@
+function celp_encoder_decoder()
+    try
+        [audio, fs] = audioread('group_record.wav');
+        if size(audio, 2) > 1
+            audio = mean(audio, 2); 
+        end
+    catch
+        error('Không đọc được file group_record.wav.');
+    end
+    audio = audio / max(abs(audio)); 
+    audio = resample(audio, 8000, fs); 
+    fs = 8000;
+   
+    audio = filter([1 -0.97], 1, audio);
+   
+    frame_size = round(0.02 * fs);   
+    overlap = round(0.01 * fs);      
+    hop = frame_size - overlap;
+    LPC_order = 12;                  
+    min_pitch = round(fs/400);       
+    max_pitch = round(fs/60);        
+    codebook_size = 16;             
+    
+    num_frames = floor((length(audio) - overlap) / hop);
+    frames = zeros(num_frames, frame_size);
+    for i = 1:num_frames
+        start = (i-1)*hop + 1;
+        frames(i,:) = audio(start:min(start+frame_size-1, end));
+    end
+    
+    rng(0);
+    codebook = generate_codebook(frame_size, codebook_size);
+    
+
+    lpc_coeffs = zeros(num_frames, LPC_order);
+    pitch_gains = zeros(num_frames, 1);
+    pitch_lags = zeros(num_frames, 1);
+    codebook_indices = zeros(num_frames, 1);
+    codebook_gains = zeros(num_frames, 1);
+    reconstructed = zeros(num_frames, frame_size);
+    
+    for i = 1:num_frames
+        x = frames(i,:) .* hamming(frame_size)';
+        if sum(x.^2) < 1e-6
+            lpc_coeffs(i,:) = zeros(1, LPC_order);
+            pitch_gains(i) = 0;
+            pitch_lags(i) = min_pitch;
+            codebook_indices(i) = 1;
+            codebook_gains(i) = 0;
+            reconstructed(i,:) = zeros(1, frame_size);
+            continue;
+        end
+
+        [r, ~] = xcorr(x, LPC_order, 'biased');
+        r = r(LPC_order+1:end);
+        a = levinson_durbin(r, LPC_order);
+        if max(abs(roots([1; -a(2:end)]))) >= 1
+            a(2:end) = a(2:end) * 0.99; % Ổn định
+        end
+        lpc_coeffs(i,:) = a(2:end)';
+        
+        e_short = filter([1, -lpc_coeffs(i,:)], 1, x);
+        
+        [pitch_gain, pitch_lag] = find_pitch(e_short, min_pitch, max_pitch);
+        pitch_gains(i) = pitch_gain;
+        pitch_lags(i) = pitch_lag;
+        
+        e_long = filter(1, [1 zeros(1, pitch_lag-1) -pitch_gain], e_short);
+        [idx, gain] = find_best_codebook(e_long, codebook);
+        codebook_indices(i) = idx;
+        if isscalar(gain) && ~isnan(gain)
+            codebook_gains(i) = gain;
+        else
+            codebook_gains(i) = 0; 
+        end
+        excitation = gain * codebook(idx,:)';
+        
+        e_total = filter(1, [1 zeros(1, pitch_lag-1) -pitch_gain], excitation);
+        y = filter(1, [1, -lpc_coeffs(i,:)], e_total);
+        reconstructed(i,:) = y';
+    end
+    
+    compressed_data.lpc_coeffs = lpc_coeffs;
+    compressed_data.pitch_lags = pitch_lags;
+    compressed_data.pitch_gains = pitch_gains;
+    compressed_data.codebook_indices = codebook_indices;
+    compressed_data.codebook_gains = codebook_gains;
+    save('compressed_data.mat', 'compressed_data');
+    disp('Dữ liệu nén đã lưu vào compressed_data.mat');
+    
+    output_len = (num_frames-1)*hop + frame_size;
+    reconstructed_signal = zeros(output_len, 1);
+    
+    for i = 1:num_frames
+        start = (i-1)*hop + 1;
+        stop = min(start + frame_size - 1, output_len);
+        len = stop - start + 1;
+        y = reconstructed(i,1:len)';
+        win = hamming(len);
+        reconstructed_signal(start:stop) = reconstructed_signal(start:stop) + y .* win;
+    end
+    
+    reconstructed_signal = filter(1, [1 -0.97], reconstructed_signal); % De-emphasis
+    max_ampl = max(abs(reconstructed_signal));
+    if max_ampl > 0
+        reconstructed_signal = reconstructed_signal / max_ampl;
+    end
+
+    min_len = min(length(audio), length(reconstructed_signal));
+    mse = mean((audio(1:min_len) - reconstructed_signal(1:min_len)).^2);
+    if mse > 0
+        psnr = 10 * log10(1 / mse);
+    else
+        psnr = Inf;
+    end
+    disp(['PSNR = ', num2str(psnr), ' dB']);
+    audiowrite('output_celp.wav', reconstructed_signal, fs);
+    disp('Hoàn tất! File output_celp.wav đã được lưu.');
+end
+function [gain, lag] = find_pitch(residual, min_lag, max_lag)
+    [r, lags] = xcorr(residual, max_lag, 'biased');
+    valid_idx = lags >= min_lag & lags <= max_lag;
+    r = r(valid_idx);
+    lags = lags(valid_idx);
+    if isempty(r)
+        gain = 0;
+        lag = min_lag;
+        return;
+    end
+    [~, idx] = max(r);
+    lag = lags(idx);
+    gain = min(max(r(idx) / (norm(residual)^2 + eps), 0), 0.3);
+end
+
+function [idx, gain] = find_best_codebook(residual, codebook)
+    residual = residual / (norm(residual) + eps);
+    best_dist = inf;
+    best_idx = 1;
+    best_gain = 0;
+    for k = 1:size(codebook, 1)
+        cb = codebook(k,:)';
+        synth = cb / (norm(cb) + eps);
+        g = sum(residual .* synth) / (norm(synth)^2 + eps);
+        g = min(max(g, 0), 0.5);
+        dist = norm(residual - g * synth);
+        if dist < best_dist
+            best_dist = dist;
+            best_idx = k;
+            best_gain = g;
+        end
+    end
+    idx = best_idx;
+    gain = best_gain;
+end
+
+function codebook = generate_codebook(frame_len, size)
+    codebook = zeros(size, frame_len);
+    for i = 1:size
+        pulse = zeros(frame_len, 1);
+        pos = randi([1, frame_len], 1);
+        pulse(pos) = sign(randn(1)) * 0.4;
+        codebook(i,:) = conv(pulse, ones(40,1)/40, 'same')';
+        codebook(i,:) = codebook(i,:) / (norm(codebook(i,:)) + eps);
+    end
+end
+
+function a = levinson_durbin(r, p)
+    a = zeros(p+1, 1);
+    e = r(1);
+    if e == 0
+        a(1) = 1;
+        return;
+    end
+    a(1) = 1;
+    for i = 1:p
+        acc = r(i+1);
+        for j = 1:i-1
+            acc = acc + a(j+1)*r(i-j+1);
+        end
+        k = -acc / e;
+        a_new = a;
+        for j = 2:i
+            a_new(j) = a(j) + k*a(i-j+2);
+        end
+        a_new(i+1) = k;
+        e = e * (1 - k^2);
+        a = a_new;
+    end
+end
