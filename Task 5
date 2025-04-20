@@ -1,0 +1,77 @@
+import os
+from midiutil import MIDIFile
+from pydub import AudioSegment
+
+# -------------------------------
+# STEP 1: Generate a simple jazz MIDI
+# -------------------------------
+def generate_jazz_midi(midi_path):
+    print("[INFO] Generating jazz-style MIDI...")
+
+    midi = MIDIFile(1)
+    track = 0
+    time = 0
+    midi.addTrackName(track, time, "Jazz Track")
+    midi.addTempo(track, time, 100)
+
+    channel = 0
+    volume = 100
+    instrument = 0  # Acoustic Grand Piano
+    midi.addProgramChange(track, channel, time, instrument)
+
+    # Simple jazz-style walking bass line (Cmaj7 to G7)
+    notes = [60, 62, 64, 67, 59, 62, 65, 67]  # Cmaj7 → G7
+    for i, pitch in enumerate(notes):
+        midi.addNote(track, channel, pitch, time + i, 1, volume)
+
+    with open(midi_path, "wb") as output_file:
+        midi.writeFile(output_file)
+    print(f"[INFO] MIDI saved to {midi_path}")
+
+# -------------------------------
+# STEP 2: Mix the rendered MIDI and voice recording
+# -------------------------------
+def mix_audio(recorded_path, midi_path, output_path):
+    print("[INFO] Loading audio files...")
+    recorded = AudioSegment.from_file(recorded_path)
+    jazz = AudioSegment.from_file(midi_path)
+
+    print("[INFO] Mixing...")
+    mixed = recorded.overlay(jazz)
+
+    print(f"[INFO] Exporting final mix to {output_path}")
+    mixed.export(output_path, format="wav")
+
+# -------------------------------
+# STEP 3: Optional Opus (CELP) compression
+# -------------------------------
+def compress_to_opus(wav_input, opus_output):
+    print("[INFO] Compressing to .opus (CELP)...")
+    audio = AudioSegment.from_wav(wav_input)
+    audio.export(opus_output, format="opus", codec="libopus")
+    print(f"[INFO] Compressed file saved as {opus_output}")
+
+# -------------------------------
+# MAIN
+# -------------------------------
+if __name__ == "__main__":
+    recorded_path = "recorded_audio.wav"
+    midi_file = "jazz_track.mid"
+    rendered_wav = "midi_rendered.wav"
+    final_mix = "final_mix.wav"
+    compressed_mix = "final_mix.opus"
+
+    # Step 1: Generate MIDI
+    generate_jazz_midi(midi_file)
+
+    # Step 2: Render MIDI to WAV using FluidSynth
+    print("[INFO] Rendering MIDI to WAV using FluidSynth...")
+    soundfont = "FluidR3_GM.sf2"  # Make sure this is in your folder or provide full path
+    fs_command = f'fluidsynth -ni "{soundfont}" "{midi_file}" -F "{rendered_wav}" -r 44100'
+    os.system(fs_command)
+
+    # Step 3: Mix voice + jazz
+    mix_audio(recorded_path, rendered_wav, final_mix)
+
+    # Step 4: Optional CELP (Opus) compression
+    compress_to_opus(final_mix, compressed_mix)
